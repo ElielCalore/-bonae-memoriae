@@ -1,17 +1,22 @@
 const router = require("express").Router();
 const MemoryModel = require("../models/Memory.model");
 const AlbumModel = require("../models/Album.model");
+const UserModel = require("../models/User.model");
+const isAuth = require("../middlewares/isAuth");
+const attachCurrentUser = require("../middlewares/attachCurrentUser");
 
 // CREATE
-router.post("/create-memory", async (req, res) => {
+router.post("/create-memory", isAuth, attachCurrentUser, async (req, res) => {
   try {
-    // Se a gente quiser que toda memoria tenha que está em um album, podemos fazer algo assim
-    // Ia ter que receber o id do album ou no body ou como parametro de rota, de seus pulos
-    // if (!req.body.albuns || req.body.albuns === []) {
-    //   return res.status(400).json({ message: "A memoria precisa de um album" });
-    // }
+    if (!req.body.albuns || req.body.albuns === []) {
+      return res.status(400).json({ message: "A memoria precisa de um album" });
+    }
 
-    const createdMemory = await MemoryModel.create(req.body);
+    const createdMemory = await MemoryModel.create({
+      ...req.body,
+      owner: req.currentUser._id,
+      $push: { albuns: req.body.albuns },
+    });
 
     return res.status(201).json(createdMemory);
   } catch (err) {
@@ -22,21 +27,12 @@ router.post("/create-memory", async (req, res) => {
 });
 
 // READ ALL
-router.get("/my-memories", async (req, res) => {
+router.get("/my-memories", isAuth, attachCurrentUser, async (req, res) => {
   try {
     const myMemories = await MemoryModel.find(
-      {},
+      { owner: req.currentUser._id },
       { feeling: 0, creationDate: 0, albuns: 0 }
     );
-
-    // const mappedMemories = myMemories.map((currentElement) => {
-    //   return {
-    //     _id: currentElement._id,
-    //     title: currentElement.title,
-    //     date: currentElement.date,
-    //     location: currentElement.location,
-    //   };
-    // });
 
     return res.status(200).json(myMemories);
   } catch (err) {
@@ -48,12 +44,13 @@ router.get("/my-memories", async (req, res) => {
 
 // READ - DETAILS
 
-router.get("/:memoryId", async (req, res) => {
+router.get("/:memoryId", isAuth, attachCurrentUser, async (req, res) => {
   try {
     const { memoryId } = req.params;
-    const foundedMemory = await MemoryModel.findOne({ _id: memoryId }).populate(
-      "albuns"
-    );
+    const foundedMemory = await MemoryModel.findOne({
+      _id: memoryId,
+      owner: req.currentUser._id,
+    }).populate("albuns");
 
     return res.status(200).json(foundedMemory);
   } catch (err) {
@@ -64,14 +61,22 @@ router.get("/:memoryId", async (req, res) => {
 
 // UPDATE
 
-router.patch("/edit/:memoryId", async (req, res) => {
+router.patch("/edit/:memoryId", isAuth, attachCurrentUser, async (req, res) => {
   try {
     const { memoryId } = req.params;
-
+    const { loggedInUser } = req.currentUser;
     const body = { ...req.body };
 
     delete body.albuns;
     delete body.creationDate;
+
+    const memory = await MemoryModel.findOne({ _id: memoryId });
+
+    if (memory.owner !== loggedInUser._id) {
+      return res
+        .status(401)
+        .json({ message: "Você não pode alterar essa memoria." });
+    }
 
     const updatedMemory = await MemoryModel.findOneAndUpdate(
       { _id: memoryId },
@@ -89,51 +94,88 @@ router.patch("/edit/:memoryId", async (req, res) => {
 
 // DELETE
 
-router.delete("/delete/:memoryId", async (req, res) => {
-  try {
-    const { memoryId } = req.params;
-    const deletedMemory = await MemoryModel.deleteOne({
-      _id: req.params.memoryId,
-    });
+router.delete(
+  "/delete/:memoryId",
+  isAuth,
+  attachCurrentUser,
+  async (req, res) => {
+    try {
+      const { memoryId } = req.params;
+      const { loggedInUser } = req.currentUser;
 
-    const albuns = await AlbumModel.updateMany(
-      { memories: memoryId },
-      { $pull: { memories: memoryId } }
-    );
+      const memory = MemoryModel.findOne({ _id: memoryId });
 
-    return res.status(200).json(deletedMemory);
-  } catch (err) {
-    console.log(err);
+      if (loggedInUser._id !== memory.owner) {
+        return res
+          .status(401)
+          .json({ message: "Você não pode alterar essa memoria." });
+      }
 
-    return res.status(500).json(err);
+      const deletedMemory = await MemoryModel.deleteOne({
+        _id: req.params.memoryId,
+      });
+
+      await AlbumModel.updateMany(
+        { memories: memoryId },
+        { $pull: { memories: memoryId } }
+      );
+      await UserModel.updateMany(
+        { memories: memoryId },
+        { $pull: { memories: memoryId } }
+      );
+
+      return res.status(200).json(deletedMemory);
+    } catch (err) {
+      console.log(err);
+
+      return res.status(500).json(err);
+    }
   }
-});
+);
 
-// Add a memoria ao album espeficicado
+router.post(
+  "/add-memory/:memoryId/:albumId",
+  isAuth,
+  attachCurrentUser,
+  async (req, res) => {
+    try {
+      const { memoryId, albumId } = req.params;
 
-router.post("/add-memory/:memoryId/:albumId", async (req, res) => {
-  try {
-    const { memoryId, albumId } = req.params;
+      const { loggedInUser } = req.currentUser;
 
-    await AlbumModel.findOneAndUpdate(
-      { _id: albumId },
-      { $push: { memories: memoryId } },
-      { runValidators: true }
-    );
+      const memory = MemoryModel.findOne({ _id: memoryId });
 
-    await MemoryModel.findOneAndUpdate(
-      { _id: memoryId },
-      { $push: { albuns: albumId } },
-      { runValidators: true }
-    );
+      const album = AlbumModel.findOne({ _id: albumId });
 
-    return res
-      .status(200)
-      .json({ message: "Memoria add ao album com sucesso!" });
-  } catch (err) {
-    console.log(err);
-    return res.status(500).json(err);
+      if (
+        loggedInUser._id !== memory.owner &&
+        loggedInUser._id !== album.owner
+      ) {
+        return res
+          .status(401)
+          .json({ message: "Você não pode alterar essa memoria." });
+      }
+
+      await AlbumModel.findOneAndUpdate(
+        { _id: albumId },
+        { $push: { memories: memoryId } },
+        { runValidators: true }
+      );
+
+      await MemoryModel.findOneAndUpdate(
+        { _id: memoryId },
+        { $push: { albuns: albumId } },
+        { runValidators: true }
+      );
+
+      return res
+        .status(200)
+        .json({ message: "Memoria add ao album com sucesso!" });
+    } catch (err) {
+      console.log(err);
+      return res.status(500).json(err);
+    }
   }
-});
+);
 
 module.exports = router;

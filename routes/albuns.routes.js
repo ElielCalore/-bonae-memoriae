@@ -4,6 +4,7 @@ const MemoryModel = require("../models/Memory.model");
 
 const isAuth = require("../middlewares/isAuth");
 const attachCurrentUser = require("../middlewares/attachCurrentUser");
+const UserModel = require("../models/User.model");
 
 // CREATE
 
@@ -14,7 +15,11 @@ router.post("/create-album", isAuth, attachCurrentUser, async (req, res) => {
       owner: req.currentUser._id,
     });
 
-    // Falta colocar o id do Album dentro do User ... usem a criatividade :)
+    await UserModel.findOneAndUpdate(
+      { _id: req.currentUser._id },
+      { $push: { albuns: createdAlbum._id } },
+      { new: true }
+    );
 
     return res.status(201).json(createdAlbum);
   } catch (err) {
@@ -25,9 +30,12 @@ router.post("/create-album", isAuth, attachCurrentUser, async (req, res) => {
 
 // READ ALL
 
-router.get("/my-albuns", async (req, res) => {
+router.get("/my-albuns", isAuth, attachCurrentUser, async (req, res) => {
   try {
-    const userAlbuns = await AlbumModel.find({}, { memories: 0 });
+    const userAlbuns = await AlbumModel.find(
+      { owner: req.currentUser._id },
+      { memories: 0 }
+    );
 
     return res.status(200).json(userAlbuns);
   } catch (err) {
@@ -37,13 +45,14 @@ router.get("/my-albuns", async (req, res) => {
 });
 
 // READ DETAILS
-router.get("/:albumId", async (req, res) => {
+router.get("/:albumId", isAuth, attachCurrentUser, async (req, res) => {
   try {
     const { albumId } = req.params;
 
-    const foundAlbum = await AlbumModel.findOne({ _id: albumId }).populate(
-      "memories"
-    );
+    const foundAlbum = await AlbumModel.findOne({
+      _id: albumId,
+      owner: req.currentUser._id,
+    }).populate("memories");
 
     return res.status(200).json(foundAlbum);
   } catch (err) {
@@ -54,7 +63,7 @@ router.get("/:albumId", async (req, res) => {
 
 // EDIT
 
-router.patch("/edit/:albumId", async (req, res) => {
+router.patch("/edit/:albumId", isAuth, attachCurrentUser, async (req, res) => {
   try {
     const { albumId } = req.params;
 
@@ -63,7 +72,7 @@ router.patch("/edit/:albumId", async (req, res) => {
     delete body.memories;
 
     const album = await AlbumModel.findOneAndUpdate(
-      { _id: albumId },
+      { _id: albumId, owner: req.currentUser._id },
       { ...body },
       { new: true, runValidators: true }
     );
@@ -77,23 +86,33 @@ router.patch("/edit/:albumId", async (req, res) => {
 
 // DELETE
 
-router.delete("/delete/:albumId", async (req, res) => {
-  try {
-    const deletedAlbum = await AlbumModel.deleteOne({
-      _id: req.params.albumId,
-    });
+router.delete(
+  "/delete/:albumId",
+  isAuth,
+  attachCurrentUser,
+  async (req, res) => {
+    try {
+      const deletedAlbum = await AlbumModel.deleteOne({
+        _id: req.params.albumId,
+      });
 
-    await MemoryModel.updateMany(
-      { albuns: req.params.albumId },
-      { $pull: { albuns: req.params.albumId } }
-    );
+      await MemoryModel.updateMany(
+        { albuns: req.params.albumId },
+        { $pull: { albuns: req.params.albumId } }
+      );
 
-    return res.status(200).json(deletedAlbum);
-  } catch (err) {
-    console.log(err);
+      await UserModel.updateMany(
+        { albuns: req.params.albumId },
+        { $pull: { albuns: req.params.albumId } }
+      );
 
-    return res.status(500).json(err);
+      return res.status(200).json(deletedAlbum);
+    } catch (err) {
+      console.log(err);
+
+      return res.status(500).json(err);
+    }
   }
-});
+);
 
 module.exports = router;
